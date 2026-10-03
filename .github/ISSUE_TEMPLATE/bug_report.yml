@@ -1,0 +1,67 @@
+name: 🐛 Bug Report
+description: English template for reporting a bug
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Before you submit:
+        - Make sure you are on the **latest version** — the bug may already be fixed;
+        - **Search** existing issues to avoid duplicates.
+
+        > This project is developed with generative-AI assistance. The more detail you provide, the easier it is to locate and fix the problem.
+  - type: checkboxes
+    attributes:
+      label: Confirmations
+      options:
+        - label: I am using the latest version
+          required: true
+        - label: I searched for similar issues and found no duplicates
+          required: true
+  - type: input
+    attributes:
+      label: Minecraft & mod loader version
+      description: e.g. NeoForge 21.1.x / Minecraft 1.21.1
+      placeholder: "e.g. NeoForge 21.1.0 / Minecraft 1.21.1"
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: AkiYggdrasil version
+      description: Can be read from the jar file name in the mods folder
+      placeholder: "e.g. 0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Server type
+      options:
+        - Vanilla NeoForge server
+        - Youer / Paper + NeoForge hybrid server
+        - Other (please explain in the description)
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Description
+      description: What happened, and what did you expect?
+      placeholder: Describe the problem you encountered
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction steps
+      description: Step-by-step instructions to reproduce the issue
+      placeholder: |
+        1. Start the server
+        2. Log in with a skin-server account
+        3. Trigger the problem…
+  - type: textarea
+    attributes:
+      label: Logs & crash reports
+      description: Attach latest.log / crash-reports (drag & drop files here). Redact any sensitive info.
+  - type: textarea
+    attributes:
+      label: Additional context
+      description: Screenshots, relevant config files, etc. (optional)

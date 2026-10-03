@@ -1,0 +1,33 @@
+name: ✨ 功能建议
+description: 中文建议 / 功能请求模板
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你的建议！请描述清楚你的想法和用途，方便我们评估实现方案。
+
+        > 本项目使用生成式人工智能辅助开发，建议描述越具体，越容易被采纳实现。
+  - type: textarea
+    attributes:
+      label: 你遇到的问题或使用场景
+      description: 为什么需要这个功能？现在的使用方式有什么不便？
+      placeholder: 描述你的场景和痛点
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 期望的方案
+      description: 你希望功能如何工作？可给出大致的交互或配置设想
+      placeholder: 描述你期望的功能行为
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 备选方案（可选）
+      description: 其他可行的实现方式或折中方案
+  - type: textarea
+    attributes:
+      label: 其他补充（可选）
+      description: 截图、参考项目链接等

@@ -1,0 +1,33 @@
+name: ✨ Feature Request
+description: English template for suggesting a feature
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your suggestion! Please describe your idea and the use case clearly so we can evaluate it.
+
+        > This project is developed with generative-AI assistance. The more specific your proposal, the more likely it gets implemented.
+  - type: textarea
+    attributes:
+      label: Problem / use case
+      description: Why do you need this feature? What is inconvenient about the current behavior?
+      placeholder: Describe your scenario and pain points
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed solution
+      description: How should the feature work? You may sketch the behavior or config design
+      placeholder: Describe the expected behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives (optional)
+      description: Other possible implementations or compromises
+  - type: textarea
+    attributes:
+      label: Additional context (optional)
+      description: Screenshots, links to similar projects, etc.

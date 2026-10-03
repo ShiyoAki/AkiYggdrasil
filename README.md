@@ -64,17 +64,19 @@ ordinal = 1
   因此对聊天密钥采用「接受任意签名」的处理，保证所有来源玩家聊天可用；
   皮肤材质属性仍按真实公钥严格验证，无法伪造。
 
+## 反馈 / Feedback
+
+本项目使用**生成式人工智能**辅助开发。遇到 Bug 或有什么建议，欢迎到
+[Issues](https://github.com/ShiyoAki/AkiYggdrasil/issues) 提交——已内置
+中英文的 Bug 反馈与功能建议模板，按模板填写即可。
+
 ## 许可 / License
 
 [MIT](LICENSE)。
 
-参考项目说明：本模组为**原创实现**，参考了以下项目的协议规范与架构思路，
-但**未复制其代码**：
+参考项目：
 
-- [authlib-injector](https://github.com/yushijinhun/authlib-injector)（AGPLv3）：
-  仅遵循其 Yggdrasil 服务端**技术规范文档**（文档本身为 CC BY-SA 4.0）；
-- [MultiYggdrasil](https://github.com/Qiushui1012/MultiYggdrasil)（AGPLv3）：
-  仅参考其多源认证服务的架构设计。
-
-版权与开源协议只约束代码本身，思想、架构与协议规范不受约束；由于未复制
-上述 AGPL 项目的代码，本模组可以放心以 MIT 许可开源。
+- [authlib-injector](https://github.com/yushijinhun/authlib-injector) —
+  Yggdrasil 服务端技术规范；
+- [MultiYggdrasil](https://github.com/Qiushui1012/MultiYggdrasil) —
+  多源认证服务的架构设计。
