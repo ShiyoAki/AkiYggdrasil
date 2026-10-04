@@ -41,8 +41,16 @@ public record SignerSettings(
         int timeoutMs = (int) Math.max(500L, Math.min(30_000L, timeout));
         boolean debugLog = bool(table, "debugLog", false);
 
+        // skipSources 既接受 "A,B" 字符串，也接受 ["A", "B"] 数组
         List<String> skip = new ArrayList<>();
-        if (table.isArray("skipSources")) {
+        Object rawSkip = table.get("skipSources");
+        if (rawSkip instanceof String text) {
+            for (String name : text.split(",")) {
+                if (!name.isBlank()) {
+                    skip.add(name.trim());
+                }
+            }
+        } else if (table.isArray("skipSources")) {
             for (int i = 0; i < table.getArray("skipSources").size(); i++) {
                 String name = table.getArray("skipSources").getString(i);
                 if (name != null && !name.isBlank()) {

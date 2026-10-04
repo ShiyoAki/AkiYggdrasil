@@ -33,6 +33,9 @@ public final class YggdrasilApi {
     private static final Gson GSON = new Gson();
     private static final Type PROFILE_LIST_TYPE = new TypeToken<List<GameProfileData>>() {}.getType();
     private static final Duration TIMEOUT = Duration.ofSeconds(20);
+    // 部分皮肤站/CDN 的 WAF 会拦截没有 User-Agent 或可疑 User-Agent 的请求（返回 403），
+    // 那样签名公钥就拉不到，该站玩家的皮肤会变成默认皮肤。
+    private static final String USER_AGENT = "Mozilla/5.0 (compatible; AkiYggdrasil/0.1.0)";
 
     private final HttpClient http;
     private final Duration timeout;
@@ -204,7 +207,11 @@ public final class YggdrasilApi {
 
     private String get(String url) throws YggdrasilApiException {
         try {
-            HttpRequest request = HttpRequest.newBuilder(uri(url)).GET().timeout(timeout).build();
+            HttpRequest request = HttpRequest.newBuilder(uri(url))
+                .GET()
+                .header("User-Agent", USER_AGENT)
+                .timeout(timeout)
+                .build();
             return send(request);
         } catch (IOException e) {
             throw new YggdrasilApiException("Network error on GET " + url, e);
@@ -220,6 +227,7 @@ public final class YggdrasilApi {
                 .POST(HttpRequest.BodyPublishers.ofString(
                     jsonBody instanceof String s ? s : GSON.toJson(jsonBody), StandardCharsets.UTF_8))
                 .header("Content-Type", "application/json; charset=utf-8")
+                .header("User-Agent", USER_AGENT)
                 .timeout(timeout)
                 .build();
             return send(request);
@@ -236,6 +244,7 @@ public final class YggdrasilApi {
             HttpRequest request = HttpRequest.newBuilder(uri(url))
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(jsonBody), StandardCharsets.UTF_8))
                 .header("Content-Type", "application/json; charset=utf-8")
+                .header("User-Agent", USER_AGENT)
                 .timeout(timeout)
                 .build();
             HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
