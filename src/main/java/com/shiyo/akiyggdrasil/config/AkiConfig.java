@@ -22,15 +22,21 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 /**
- * The list of Yggdrasil authentication sources, read from
- * {@code config/akiyggdrasil.toml}. When no config file exists the built-in
- * default is written to disk so it can be edited by the server owner.
+ * The list of Yggdrasil authentication sources plus the remote skin signing
+ * settings, read from {@code config/akiyggdrasil.toml}. When no config file
+ * exists the built-in default is written to disk so it can be edited by the
+ * server owner.
  *
  * <p>The config file is hot-reloaded: a background daemon thread watches the
  * file for modifications and swaps the singleton in place, notifying every
  * registered {@link #addReloadListener(Consumer) reload listener} (the auth
  * service uses that to rebuild its environments live). A file that is only
  * half-written keeps the previous configuration instead of breaking the server.
+ *
+ * <p>Failure handling is deliberately fail-closed: a config that cannot be
+ * parsed never falls back to a list of public skin sites - the previous good
+ * configuration is kept, and if there is none, only Mojang's official source is
+ * used.
  */
 public final class AkiConfig {
 
@@ -38,25 +44,31 @@ public final class AkiConfig {
     private static final String CONFIG_FILE_NAME = "akiyggdrasil.toml";
     private static final long WATCH_INTERVAL_MS = 3000;
 
-    public static final AkiConfig DEFAULT = new AkiConfig(List.of(
-        AuthSource.api("LittleSkin", "https://littleskin.cn/api/yggdrasil", 0),
-        AuthSource.official("MojangOfficial", 1)
-    ));
+    public static final AkiConfig DEFAULT = new AkiConfig(
+        List.of(AuthSource.official("MojangOfficial", 0)),
+        SignerSettings.DISABLED
+    );
 
     private static volatile AkiConfig cached;
     private static volatile boolean watching;
     private static final List<Consumer<AkiConfig>> reloadListeners = new CopyOnWriteArrayList<>();
 
     private final List<AuthSource> sources;
+    private final SignerSettings signer;
 
-    public AkiConfig(List<AuthSource> sources) {
+    public AkiConfig(List<AuthSource> sources, SignerSettings signer) {
         List<AuthSource> sorted = new ArrayList<>(sources);
         sorted.sort(Comparator.naturalOrder());
         this.sources = List.copyOf(sorted);
+        this.signer = signer;
     }
 
     public List<AuthSource> sources() {
         return sources;
+    }
+
+    public SignerSettings signer() {
+        return signer;
     }
 
     public static AkiConfig get() {
@@ -84,22 +96,41 @@ public final class AkiConfig {
         return FMLPaths.CONFIGDIR.get().resolve(CONFIG_FILE_NAME);
     }
 
+    /**
+     * Loads the configuration, migrating a legacy {@code akiyggdrasil.ini} when
+     * present. Never throws: a broken file keeps the previous configuration.
+     */
     public static AkiConfig load(Path path) {
         if (!Files.exists(path)) {
+            Path legacy = LegacyIniConfig.legacyPath(path);
+            if (Files.exists(legacy)) {
+                AkiConfig migrated = LegacyIniConfig.migrate(legacy, path);
+                if (migrated != null) {
+                    return migrated;
+                }
+            }
             DEFAULT.save(path);
-            LOGGER.info("[AkiYggdrasil] Wrote default config to {}", path);
+            LOGGER.info("[AkiYggdrasil] Wrote default config to {} - edit it to add your auth sources", path);
             return DEFAULT;
         }
 
-        AkiConfig config;
         try {
-            config = parse(path);
+            AkiConfig config = parse(path);
             LOGGER.info("[AkiYggdrasil] Loaded {} auth source(s) from {}", config.sources.size(), path);
+            LOGGER.info("[AkiYggdrasil] Skin re-signing: {}",
+                config.signer.enabled() ? "enabled -> " + config.signer.endpoint() : "disabled");
+            return config;
         } catch (Exception e) {
-            LOGGER.warn("[AkiYggdrasil] Cannot read config {}, using defaults", path, e);
-            config = DEFAULT;
+            AkiConfig previous = cached;
+            if (previous != null) {
+                LOGGER.error("[AkiYggdrasil] Cannot read config {} - keeping the previous configuration: {}",
+                    path, e.toString());
+                return previous;
+            }
+            LOGGER.error("[AkiYggdrasil] Cannot read config {} - falling back to Mojang only: {}",
+                path, e.toString());
+            return DEFAULT;
         }
-        return config;
     }
 
     public static AkiConfig parse(Path path) throws IOException {
@@ -139,7 +170,15 @@ public final class AkiConfig {
         if (sources.isEmpty()) {
             throw new IllegalArgumentException("No valid auth sources in " + path);
         }
-        return new AkiConfig(sources);
+
+        SignerSettings signer;
+        try {
+            signer = SignerSettings.parse(result);
+        } catch (RuntimeException e) {
+            LOGGER.warn("[AkiYggdrasil] Invalid [signer] section, skin re-signing stays disabled: {}", e.toString());
+            signer = SignerSettings.DISABLED;
+        }
+        return new AkiConfig(sources, signer);
     }
 
     public void save(Path path) {
@@ -157,11 +196,15 @@ public final class AkiConfig {
                 writer.newLine();
                 writer.write("#  到大依次询问，直到某个源确认了玩家的会话为止。");
                 writer.newLine();
+                writer.write("#  只有写在这里的认证源才能进服；删掉某个源即禁止该站玩家进入。");
+                writer.newLine();
+                writer.write("#  Only the sources listed here can join; removing one locks it out.");
+                writer.newLine();
                 writer.write("#  修改保存后约 3 秒自动热重载，无需重启服务器。");
                 writer.newLine();
                 writer.write("#  (Changes are hot-reloaded within a few seconds; no restart needed.)");
                 writer.newLine();
-                writer.write("#  删除本文件可恢复默认配置。");
+                writer.write("#  删除本文件可恢复默认配置（默认只允许 Mojang 正版）。");
                 writer.newLine();
                 writer.write("# ============================================================");
                 writer.newLine();
@@ -173,6 +216,10 @@ public final class AkiConfig {
                         writer.write(line);
                         writer.newLine();
                     }
+                    writer.newLine();
+                }
+                for (String line : signer.serialize()) {
+                    writer.write(line);
                     writer.newLine();
                 }
             }

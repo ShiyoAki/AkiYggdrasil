@@ -40,6 +40,8 @@ import java.net.InetAddress;
 import java.net.Proxy;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.PublicKey;
+import java.security.Signature;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -57,8 +59,12 @@ import java.util.stream.Collectors;
  * players from LittleSkin, self-hosted Yggdrasil servers and Mojang all able
  * to join the same server: {@code join} is recorded on every source (the one
  * that owns the token accepts it), {@code hasJoined} polls each source until
- * one recognizes the session, and profile properties are fetched the same
- * way.
+ * one recognizes the session, and profile properties are fetched the same way.
+ *
+ * <p>On top of that, a {@code textures} property that the peers' clients would
+ * reject (because it was signed by a source they do not trust) is re-signed by
+ * the configured skin site. The payload - and therefore the texture URLs - is
+ * left untouched, only the signature is replaced.
  */
 public final class AkiSessionService implements MinecraftSessionService {
 
@@ -67,9 +73,11 @@ public final class AkiSessionService implements MinecraftSessionService {
     private volatile List<String> baseUrls = List.of();
     private volatile List<URL> joinUrls = List.of();
     private volatile List<URL> checkUrls = List.of();
+    private volatile List<String> checkSourceNames = List.of();
 
     private final MinecraftClient client;
     private volatile ServicesKeySet servicesKeySet;
+    private volatile SkinSigner signer;
     private final Gson gson = new GsonBuilder().registerTypeAdapter(UUID.class, new UUIDTypeAdapter()).create();
     private final LoadingCache<UUID, Optional<ProfileResult>> insecureProfiles = CacheBuilder
         .newBuilder()
@@ -81,26 +89,33 @@ public final class AkiSessionService implements MinecraftSessionService {
             }
         });
 
-    public AkiSessionService(Proxy proxy, List<Environment> envs, ServicesKeySet servicesKeySet) {
+    public AkiSessionService(Proxy proxy, List<Environment> envs, List<String> sourceNames,
+                             ServicesKeySet servicesKeySet, SkinSigner signer) {
         this.client = MinecraftClient.unauthenticated(proxy);
-        update(envs, servicesKeySet);
+        this.signer = signer;
+        update(envs, sourceNames, servicesKeySet, signer);
     }
 
     /** Replaces the auth source endpoints and signature key set (config hot reload). */
-    public void update(List<Environment> envs, ServicesKeySet keySet) {
+    public void update(List<Environment> envs, List<String> sourceNames, ServicesKeySet keySet, SkinSigner signer) {
         List<String> newBase = new ArrayList<>();
         List<URL> newJoin = new ArrayList<>();
         List<URL> newCheck = new ArrayList<>();
-        for (Environment env : envs) {
+        List<String> newCheckNames = new ArrayList<>();
+        for (int i = 0; i < envs.size(); i++) {
+            Environment env = envs.get(i);
             String baseUrl = env.sessionHost() + "/session/minecraft/";
             newBase.add(baseUrl);
             newJoin.add(HttpAuthenticationService.constantURL(baseUrl + "join"));
             newCheck.add(HttpAuthenticationService.constantURL(baseUrl + "hasJoined"));
+            newCheckNames.add(i < sourceNames.size() ? sourceNames.get(i) : env.toString());
         }
         this.baseUrls = List.copyOf(newBase);
         this.joinUrls = List.copyOf(newJoin);
         this.checkUrls = List.copyOf(newCheck);
+        this.checkSourceNames = List.copyOf(newCheckNames);
         this.servicesKeySet = keySet;
+        this.signer = signer;
     }
 
     @Override
@@ -133,7 +148,9 @@ public final class AkiSessionService implements MinecraftSessionService {
         }
 
         boolean sawUnavailable = false;
-        for (URL checkUrl : checkUrls) {
+        for (int i = 0; i < checkUrls.size(); i++) {
+            URL checkUrl = checkUrls.get(i);
+            String sourceName = checkSourceNames.get(i);
             try {
                 URL url = HttpAuthenticationService.concatenateURL(checkUrl, HttpAuthenticationService.buildQuery(arguments));
                 HasJoinedMinecraftServerResponse response = client.get(url, HasJoinedMinecraftServerResponse.class);
@@ -145,6 +162,8 @@ public final class AkiSessionService implements MinecraftSessionService {
                 if (response.properties() != null) {
                     profile.getProperties().putAll(response.properties());
                 }
+                String textureState = resignTextures(profile, sourceName, profileName);
+                LOGGER.info("[AkiYggdrasil] 玩家 {} 由认证源 {} 放行，皮肤={}", profileName, sourceName, textureState);
                 Set<ProfileActionType> profileActions = response.profileActions().stream()
                     .map(ProfileAction::type)
                     .collect(Collectors.toSet());
@@ -165,6 +184,58 @@ public final class AkiSessionService implements MinecraftSessionService {
             throw new AuthenticationUnavailableException("All auth sources failed to verify the session");
         }
         return null;
+    }
+
+    /**
+     * Makes the {@code textures} property acceptable to as many clients as
+     * possible. Properties already signed by Mojang are left alone (official
+     * launchers only trust those), everything else is re-signed by the skin site.
+     *
+     * @return a short status used in the login log line
+     */
+    private String resignTextures(GameProfile profile, String sourceName, String profileName) {
+        Property property = getPackedTextures(profile);
+        if (property == null) {
+            return "无";
+        }
+        SkinSigner local = signer;
+        if (local == null || !local.enabled()) {
+            return "未启用重签";
+        }
+        if (local.skipSources().contains(sourceName)) {
+            return "保留(本站)";
+        }
+        if (isMojangSigned(property)) {
+            return "保留(Mojang)";
+        }
+
+        Optional<String> signature = local.sign(property.value());
+        if (signature.isEmpty()) {
+            return "重签失败";
+        }
+        profile.getProperties().removeAll("textures");
+        profile.getProperties().put("textures", new Property("textures", property.value(), signature.get()));
+        if (local.debugLog()) {
+            LOGGER.info("[AkiYggdrasil] textures 调试 dump 玩家={} 源={} value={} signature={}",
+                profileName, sourceName, property.value(), signature.get());
+        }
+        return "重签";
+    }
+
+    /** True when the bundled Mojang public key validates this property. */
+    private boolean isMojangSigned(Property property) {
+        if (!property.hasSignature()) {
+            return false;
+        }
+        try {
+            PublicKey mojangKey = PublicKeyUtil.loadMojangKey();
+            Signature verifier = Signature.getInstance("SHA1withRSA");
+            verifier.initVerify(mojangKey);
+            verifier.update(property.value().getBytes(StandardCharsets.UTF_8));
+            return verifier.verify(Base64.getDecoder().decode(property.signature()));
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     @Nullable

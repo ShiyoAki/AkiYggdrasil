@@ -15,9 +15,13 @@ import org.slf4j.Logger;
 
 import java.net.Proxy;
 import java.security.PublicKey;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * The server's authentication service. Replaces the vanilla
@@ -28,17 +32,26 @@ import java.util.Optional;
  *
  * <p>At construction time the signature public keys are collected: the bundled
  * Mojang key plus each API source's {@code signaturePublickey} from its
- * authlib-injector metadata document.
+ * authlib-injector metadata document. A source whose metadata cannot be fetched
+ * right now (site briefly down, slow network) is retried in the background so a
+ * transient outage no longer leaves that source's players with permanently
+ * unverifiable textures.
  */
 public final class AkiAuthService extends YggdrasilAuthenticationService {
 
     private static final Logger LOGGER = LogUtils.getLogger();
+    private static final Duration METADATA_TIMEOUT = Duration.ofSeconds(8);
+    private static final long KEY_RETRY_INTERVAL_MS = 60_000L;
+    private static final int KEY_RETRY_ATTEMPTS = 10;
 
     private volatile List<Environment> environments;
+    private volatile List<String> sourceNames;
     private volatile ServicesKeySet servicesKeySet;
+    private volatile SkinSigner signer;
     private volatile AkiSessionService sessionService;
     private volatile AkiGameProfileRepository profileRepository;
     private volatile boolean reloadEnabled;
+    private final List<PublicKey> keys = new CopyOnWriteArrayList<>();
 
     public AkiAuthService(Proxy proxy) {
         this(proxy, AkiConfig.get());
@@ -64,17 +77,34 @@ public final class AkiAuthService extends YggdrasilAuthenticationService {
     }
 
     private void applyConfig(AkiConfig config) {
-        this.environments = config.sources().stream().map(AuthSource::toEnvironment).toList();
-        this.servicesKeySet = buildServicesKeySet(config);
+        List<Environment> envs = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        for (AuthSource source : config.sources()) {
+            envs.add(source.toEnvironment());
+            names.add(source.name());
+        }
+        this.environments = List.copyOf(envs);
+        this.sourceNames = List.copyOf(names);
+        this.signer = new SkinSigner(config.signer());
+
+        this.keys.clear();
+        try {
+            keys.add(PublicKeyUtil.loadMojangKey());
+        } catch (Exception e) {
+            LOGGER.error("[AkiYggdrasil] Failed to load the bundled Mojang public key", e);
+        }
+        Set<String> missing = collectApiKeys(config.sources());
+        refreshKeySet();
+
         LOGGER.info("[AkiYggdrasil] Auth environments: {}", environments);
+        if (!missing.isEmpty()) {
+            LOGGER.warn("[AkiYggdrasil] No signature key yet for {}, will retry in the background", missing);
+            scheduleKeyRetry(config, missing);
+        }
     }
 
     private void onConfigReload(AkiConfig config) {
         applyConfig(config);
-        AkiSessionService session = sessionService;
-        if (session != null) {
-            session.update(environments, servicesKeySet);
-        }
         AkiGameProfileRepository repo = profileRepository;
         if (repo != null) {
             repo.update(environments);
@@ -85,27 +115,24 @@ public final class AkiAuthService extends YggdrasilAuthenticationService {
         return environments;
     }
 
-    private static ServicesKeySet buildServicesKeySet(AkiConfig config) {
-        List<PublicKey> keys = new ArrayList<>();
-        try {
-            keys.add(PublicKeyUtil.loadMojangKey());
-        } catch (Exception e) {
-            LOGGER.error("[AkiYggdrasil] Failed to load the bundled Mojang public key", e);
-        }
-
-        YggdrasilApi api = new YggdrasilApi();
-        for (AuthSource source : config.sources()) {
+    /** Fetches each API source's signature public key. Returns the names it could not get. */
+    private Set<String> collectApiKeys(List<AuthSource> sources) {
+        Set<String> missing = new LinkedHashSet<>();
+        YggdrasilApi api = new YggdrasilApi(METADATA_TIMEOUT);
+        for (AuthSource source : sources) {
             if (source.type() != AuthSourceType.API) {
                 continue;
             }
             Optional<YggdrasilApi.Metadata> metadata = api.fetchMetadata(source.apiRoot());
             if (metadata.isEmpty()) {
                 LOGGER.warn("[AkiYggdrasil] Could not fetch metadata from {} ({})", source.name(), source.apiRoot());
+                missing.add(source.name());
                 continue;
             }
             String pem = metadata.get().signaturePublickey();
             if (pem == null || pem.isBlank()) {
                 LOGGER.warn("[AkiYggdrasil] Source {} does not publish a signature public key", source.name());
+                missing.add(source.name());
                 continue;
             }
             try {
@@ -113,16 +140,49 @@ public final class AkiAuthService extends YggdrasilAuthenticationService {
                 LOGGER.info("[AkiYggdrasil] Fetched signature public key from {}", source.name());
             } catch (Exception e) {
                 LOGGER.warn("[AkiYggdrasil] Invalid signature public key from {}", source.name(), e);
+                missing.add(source.name());
             }
         }
+        return missing;
+    }
 
-        AkiServicesKeyInfo info = new AkiServicesKeyInfo(keys);
-        return type -> List.of(info);
+    private void scheduleKeyRetry(AkiConfig config, Set<String> missing) {
+        Thread thread = new Thread(() -> {
+            for (int attempt = 0; attempt < KEY_RETRY_ATTEMPTS; attempt++) {
+                try {
+                    Thread.sleep(KEY_RETRY_INTERVAL_MS);
+                } catch (InterruptedException e) {
+                    return;
+                }
+                List<AuthSource> pending = config.sources().stream()
+                    .filter(s -> missing.contains(s.name()))
+                    .toList();
+                Set<String> stillMissing = collectApiKeys(pending);
+                missing.retainAll(stillMissing);
+                if (missing.isEmpty()) {
+                    LOGGER.info("[AkiYggdrasil] All signature keys are now available");
+                    return;
+                }
+                refreshKeySet();
+                LOGGER.warn("[AkiYggdrasil] Still missing signature keys for {}", missing);
+            }
+        }, "AkiYggdrasil-KeyRetry");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    /** Rebuilds the key set view and pushes it into the live session service. */
+    private void refreshKeySet() {
+        this.servicesKeySet = type -> List.of(new AkiServicesKeyInfo(List.copyOf(keys)));
+        AkiSessionService session = sessionService;
+        if (session != null) {
+            session.update(environments, sourceNames, servicesKeySet, signer);
+        }
     }
 
     @Override
     public MinecraftSessionService createMinecraftSessionService() {
-        AkiSessionService service = new AkiSessionService(getProxy(), environments, servicesKeySet);
+        AkiSessionService service = new AkiSessionService(getProxy(), environments, sourceNames, servicesKeySet, signer);
         this.sessionService = service;
         return service;
     }

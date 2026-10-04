@@ -35,14 +35,24 @@ public final class YggdrasilApi {
     private static final Duration TIMEOUT = Duration.ofSeconds(20);
 
     private final HttpClient http;
+    private final Duration timeout;
 
     public YggdrasilApi() {
-        this(Proxy.NO_PROXY);
+        this(Proxy.NO_PROXY, TIMEOUT);
+    }
+
+    public YggdrasilApi(Duration timeout) {
+        this(Proxy.NO_PROXY, timeout);
     }
 
     public YggdrasilApi(Proxy proxy) {
+        this(proxy, TIMEOUT);
+    }
+
+    public YggdrasilApi(Proxy proxy, Duration timeout) {
+        this.timeout = timeout;
         this.http = HttpClient.newBuilder()
-            .connectTimeout(TIMEOUT)
+            .connectTimeout(timeout)
             .proxy(toProxySelector(proxy))
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
@@ -194,7 +204,7 @@ public final class YggdrasilApi {
 
     private String get(String url) throws YggdrasilApiException {
         try {
-            HttpRequest request = HttpRequest.newBuilder(uri(url)).GET().timeout(TIMEOUT).build();
+            HttpRequest request = HttpRequest.newBuilder(uri(url)).GET().timeout(timeout).build();
             return send(request);
         } catch (IOException e) {
             throw new YggdrasilApiException("Network error on GET " + url, e);
@@ -210,7 +220,7 @@ public final class YggdrasilApi {
                 .POST(HttpRequest.BodyPublishers.ofString(
                     jsonBody instanceof String s ? s : GSON.toJson(jsonBody), StandardCharsets.UTF_8))
                 .header("Content-Type", "application/json; charset=utf-8")
-                .timeout(TIMEOUT)
+                .timeout(timeout)
                 .build();
             return send(request);
         } catch (IOException e) {
@@ -226,7 +236,7 @@ public final class YggdrasilApi {
             HttpRequest request = HttpRequest.newBuilder(uri(url))
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(jsonBody), StandardCharsets.UTF_8))
                 .header("Content-Type", "application/json; charset=utf-8")
-                .timeout(TIMEOUT)
+                .timeout(timeout)
                 .build();
             HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
             return response.statusCode() / 100 == 2;
